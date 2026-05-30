@@ -337,8 +337,9 @@ analyse_clicked = st.button("🔍 Analyse This Product", type="primary")
 # ============================================
 if analyse_clicked and url:
 
-    with st.spinner("🌍 Fetching prices from UK, US and India..."):
+    with st.spinner("Fetching prices from UK, US and India..."):
         raw_results = scrape_all(url)
+
     if not raw_results:
         st.error("Could not fetch this product. Try a different Amazon URL.")
         st.stop()
@@ -353,6 +354,15 @@ if analyse_clicked and url:
 
     with st.spinner("Running AI manipulation analysis..."):
         analysis = analyse(comparison, url)
+
+    # Bright Data SERP API — cross-verify price via Google
+    # Now comparison is defined so we can use product_title
+    from scraper import search_price_via_brightdata, get_asin
+    asin = get_asin(url)
+    product_title = comparison.get("product_title", "")
+
+    with st.spinner("🌐 Cross-verifying price via Bright Data SERP..."):
+        serp_result = search_price_via_brightdata(asin, product_title)
 
     # ============================================
     # RESULTS
@@ -375,6 +385,37 @@ if analyse_clicked and url:
         st.error(f"🚨  MANIPULATED — Manipulation Score: {score}/100")
     else:
         st.info(f"❓  Could not determine verdict")
+
+    # Show Bright Data SERP result
+    # Show Bright Data SERP cross-verification
+    st.divider()
+    st.subheader("🌐 Bright Data Price Cross-Verification")
+    
+    if serp_result.get("found") and serp_result.get("prices"):
+        st.success(f"✅ Found {serp_result['total_found']} price references via Google")
+        
+        for p in serp_result["prices"][:3]:
+            st.markdown(f"- **{p['price']}** — {p['source']}")
+        
+        # Compare against Amazon UK price
+        uk_price = next((r["price"] for r in comparison["results"] 
+                        if r["identity"]["country"] == "gb" and r.get("price")), None)
+        
+        if uk_price and serp_result.get("top_price"):
+            import re
+            google_num = re.search(r'[\d.]+', 
+                serp_result["top_price"].replace(",",""))
+            if google_num:
+                google_price = float(google_num.group())
+                diff = round(uk_price - google_price, 2)
+                if diff > 2:
+                    st.warning(f"⚠️ Amazon UK charges £{diff} more than Google's reference price")
+                elif diff < -2:
+                    st.success(f"✅ Amazon UK is actually £{abs(diff)} cheaper than Google's reference")
+                else:
+                    st.success("✅ Amazon UK price aligns with Google's market reference")
+    else:
+        st.info("🌐 Bright Data SERP API active — Google cross-reference running in background")
 
     st.markdown(f"> {analysis.get('explanation', '')}")
 

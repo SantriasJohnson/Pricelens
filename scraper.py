@@ -32,22 +32,12 @@ def get_proxy(country: str) -> dict:
 
 def scrape_single(url: str, identity: dict) -> dict:
     """
-    Scrapes a regional Amazon URL with correct headers per region.
+    Scrapes Amazon product page directly.
+    In production this routes through Bright Data Web Unlocker.
     """
-    # Set correct headers per region so Amazon doesn't redirect
-    if identity["country"] == "us":
-        accept_language = "en-US,en;q=0.9"
-        user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-    elif identity["country"] == "in":
-        accept_language = "en-IN,en;q=0.9"
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-    else:
-        accept_language = "en-GB,en;q=0.9"
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-
     headers = {
-        "User-Agent": user_agent,
-        "Accept-Language": accept_language,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-GB,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
@@ -57,7 +47,6 @@ def scrape_single(url: str, identity: dict) -> dict:
         print(f"  → Scraping {identity['label']}...")
         session = requests.Session()
 
-        # Set region-specific cookies to prevent redirect
         if identity["country"] == "us":
             session.cookies.set("i18n-prefs", "USD", domain=".amazon.com")
         elif identity["country"] == "in":
@@ -72,7 +61,7 @@ def scrape_single(url: str, identity: dict) -> dict:
             allow_redirects=True
         )
 
-        print(f"     ✅ Status: {response.status_code} | Final URL: {response.url}")
+        print(f"     ✅ Status: {response.status_code}")
 
         return {
             "identity": identity,
@@ -92,7 +81,6 @@ def scrape_single(url: str, identity: dict) -> dict:
             "error": str(e)
         }
 
-
 def scrape_all(url: str) -> list:
     print(f"\n🔍 Analysing: {url}")
     asin = get_asin(url)
@@ -108,3 +96,96 @@ def scrape_all(url: str) -> list:
         results.append(result)
 
     return results
+def search_price_via_brightdata(asin: str, product_title: str = "") -> dict:
+    """
+    Uses Bright Data SERP API to search Google for
+    the product price — cross-verifying Amazon's stated price
+    against what Google Shopping shows.
+    """
+    api_key = os.getenv("BD_API_KEY")
+    zone = os.getenv("BD_ZONE", "serp_api1")
+
+    # Search Google Shopping for the product
+    query = f"{product_title or asin} price"
+    search_url = f"https://www.google.co.uk/search?q={query}&brd_json=1"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "zone": zone,
+        "url": search_url,
+        "format": "raw"
+    }
+
+    try:
+        print(f"  → Bright Data SERP: searching Google for '{query}'...")
+        response = requests.post(
+            "https://api.brightdata.com/request",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            import re
+
+            # Extract prices from all available sections
+            prices_found = []
+
+            # Check popular_products
+            popular = data.get("popular_products", {})
+            items = popular.get("items", []) if isinstance(popular, dict) else []
+            for item in items:
+                price_str = item.get("price", "")
+                if price_str:
+                    prices_found.append({
+                        "price": price_str,
+                        "source": item.get("shop", "Google Shopping"),
+                        "title": item.get("title", "")
+                    })
+
+            # Check organic snippets
+            organic = data.get("organic", [])
+            for result in organic[:5]:
+                snippet = result.get("snippet", "") or ""
+                title = result.get("title", "") or ""
+                price_match = re.search(r'[£$₹€][\d,]+\.?\d{0,2}', snippet + title)
+                if price_match:
+                    prices_found.append({
+                        "price": price_match.group(),
+                        "source": result.get("display_link", "Web"),
+                        "title": title
+                    })
+
+            if prices_found:
+                return {
+                    "found": True,
+                    "prices": prices_found,
+                    "top_price": prices_found[0]["price"],
+                    "top_source": prices_found[0]["source"],
+                    "total_found": len(prices_found),
+                    "error": None
+                }
+            else:
+                return {
+                    "found": False,
+                    "prices": [],
+                    "error": "No prices in Google results"
+                }
+
+        return {
+            "found": False,
+            "prices": [],
+            "error": f"Status {response.status_code}"
+        }
+
+    except Exception as e:
+        return {
+            "found": False,
+            "prices": [],
+            "error": str(e)
+        }
