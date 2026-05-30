@@ -6,3 +6,5 @@ __pycache__/
 **/.DS_Store
 cognee_system/
 settings.json.DS_Store
+__pycache__/
+settings.json
